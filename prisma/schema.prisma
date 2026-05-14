@@ -1,0 +1,235 @@
+/**
+ * PRISMA SCHEMA FILE
+ * ===================
+ * File ini mendefinisikan struktur database untuk aplikasi School Management System
+ * Menggunakan PostgreSQL sebagai database dan Prisma sebagai ORM
+ * 
+ * Dokumentasi lengkap: https://pris.ly/d/prisma-schema
+ */
+
+// GENERATOR: Mengatur cara Prisma Client di-generate
+generator client {
+  provider = "prisma-client-js"  // Menghasilkan JavaScript/TypeScript client
+}
+
+// DATASOURCE: Konfigurasi koneksi database
+datasource db {
+  provider = "postgresql"          // Menggunakan PostgreSQL
+  url      = env("DATABASE_URL")   // Connection string dari environment variable
+  // NOTE: Prisma 7 akan mengubah cara konfigurasi URL, tapi project ini menggunakan Prisma 6.19.0
+  // Warning deprecation bisa diabaikan - sintaks ini masih fully supported di Prisma 6.x
+}
+
+/**
+ * MODEL: Account
+ * ==============
+ * Menyimpan informasi OAuth accounts untuk NextAuth.js
+ * Digunakan untuk login dengan provider eksternal (Google, GitHub, dll)
+ */
+model Account {
+  id                String  @id @default(cuid())  // ID unik menggunakan CUID
+  userId            String                         // Foreign key ke User
+  type              String                         // Tipe account (oauth, email, credentials)
+  provider          String                         // Provider name (google, github, etc)
+  providerAccountId String                         // ID dari provider
+  refresh_token     String? @db.Text              // Refresh token untuk OAuth
+  access_token      String? @db.Text              // Access token untuk OAuth
+  expires_at        Int?                          // Waktu expire token (Unix timestamp)
+  token_type        String?                       // Tipe token (Bearer, etc)
+  scope             String?                       // OAuth scope
+  id_token          String? @db.Text              // ID token untuk OpenID Connect
+  session_state     String?                       // Session state untuk OAuth
+
+  // RELASI: Setiap account dimiliki oleh satu user
+  // onDelete: Cascade = Jika user dihapus, account juga dihapus
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // CONSTRAINT: Kombinasi provider dan providerAccountId harus unik
+  // Mencegah duplikasi account dari provider yang sama
+  @@unique([provider, providerAccountId])
+}
+
+/**
+ * MODEL: Session
+ * ==============
+ * Menyimpan session aktif untuk NextAuth.js
+ * Digunakan untuk mengelola login state pengguna
+ */
+model Session {
+  id           String   @id @default(cuid())  // ID unik session
+  sessionToken String   @unique               // Token session yang unik
+  userId       String                         // Foreign key ke User
+  expires      DateTime                       // Waktu expire session
+  
+  // RELASI: Setiap session dimiliki oleh satu user
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/**
+ * MODEL: User
+ * ===========
+ * Menyimpan data guru/pengguna sistem
+ * Setiap guru bisa mengajar beberapa mata pelajaran
+ */
+model User {
+  id            String    @id @default(cuid())     // ID unik user
+  name          String?                            // Nama lengkap guru
+  email         String    @unique                  // Email (unique, untuk login)
+  emailVerified DateTime?                          // Timestamp verifikasi email
+  image         String?                            // URL foto profil
+  password      String?                            // Password hash (untuk credentials login)
+  nip           String?   @unique                  // Nomor Induk Pegawai (unique)
+  kelas         String?                            // Kelas yang diajar (1-6)
+  fase          String?                            // Fase pembelajaran (a=1-2, b=3-4, c=5-6)
+  createdAt     DateTime  @default(now())          // Timestamp pembuatan
+  updatedAt     DateTime  @updatedAt               // Timestamp update terakhir
+  
+  // RELASI: One-to-Many relationships
+  accounts      Account[]  // Accounts OAuth yang dimiliki
+  sessions      Session[]  // Sessions aktif
+  subjects      Subject[]  // Mata pelajaran yang diajar
+}
+
+/**
+ * MODEL: VerificationToken
+ * ========================
+ * Token untuk verifikasi email dan reset password
+ * Digunakan oleh NextAuth.js untuk magic links
+ */
+model VerificationToken {
+  identifier String    // Email atau identifier lain
+  token      String   @unique  // Token unik untuk verifikasi
+  expires    DateTime            // Waktu expire token
+
+  // CONSTRAINT: Kombinasi identifier dan token harus unik
+  @@unique([identifier, token])
+}
+
+/**
+ * MODEL: Subject
+ * ==============
+ * Menyimpan data mata pelajaran yang diajar
+ * Setiap subject dimiliki oleh satu guru dan memiliki banyak siswa
+ */
+model Subject {
+  id        String   @id @default(cuid())    // ID unik subject
+  name      String                           // Nama mata pelajaran
+  kelas     String?                          // Kelas (1-6)
+  semester  String?                          // Semester (Ganjil/Genap)
+  teacherId String                           // Foreign key ke User (guru)
+  
+  // RELASI: Many-to-One ke User, One-to-Many ke Student
+  teacher   User     @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  students  Student[]                        // Daftar siswa dalam subject ini
+  
+  createdAt DateTime @default(now())        // Timestamp pembuatan
+  updatedAt DateTime @updatedAt             // Timestamp update terakhir
+
+  // CONSTRAINT: Kombinasi nama subject dan teacherId harus unik
+  // Satu guru tidak bisa punya 2 subject dengan nama sama
+  @@unique([name, teacherId])
+  
+  // INDEX: Untuk optimasi query berdasarkan teacher dan semester
+  @@index([teacherId])
+  @@index([semester])
+}
+
+/**
+ * MODEL: Student
+ * ==============
+ * Menyimpan data siswa dalam suatu mata pelajaran
+ * Setiap siswa terkait dengan satu subject dan memiliki nilai
+ */
+model Student {
+  id        String   @id @default(cuid())    // ID unik student
+  name      String                           // Nama lengkap siswa
+  nis       String?                          // Nomor Induk Siswa
+  gender    String?                          // Jenis kelamin (L/P)
+  notes     String?                          // Keterangan tambahan (KET)
+  className String?                          // Nama kelas (contoh: "6A")
+  subjectId String                           // Foreign key ke Subject
+  
+  // RELASI: Many-to-One ke Subject, One-to-Many ke Grade
+  subject   Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  grades    Grade[]                          // Nilai-nilai siswa
+  
+  createdAt DateTime @default(now())        // Timestamp pembuatan
+  updatedAt DateTime @updatedAt             // Timestamp update terakhir
+
+  // CONSTRAINT: Kombinasi NIS dan subjectId harus unik
+  // Satu siswa tidak bisa terdaftar 2x di subject yang sama
+  @@unique([nis, subjectId])
+  
+  // INDEX: Untuk optimasi query berdasarkan subject dan nama
+  @@index([subjectId])
+  @@index([name])
+}
+
+/**
+ * MODEL: Grade
+ * ============
+ * Menyimpan nilai siswa untuk berbagai komponen penilaian
+ * 
+ * STRUKTUR PENILAIAN:
+ * - LM = Lingkup Materi (1-5)
+ * - TP = Tujuan Pembelajaran (1-4 per LM)
+ * - SUM = Sumatif (nilai akhir per LM)
+ * - semester_final = Sumatif Akhir Semester (SAS)
+ * - final_score = Nilai Rapor (NR)
+ */
+model Grade {
+  id        String   @id @default(cuid())    // ID unik grade
+  studentId String                           // Foreign key ke Student
+  
+  // RELASI: Many-to-One ke Student
+  student   Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  
+  // INDEX: Untuk optimasi query berdasarkan student
+  @@index([studentId])
+  
+  // === LINGKUP MATERI 1 ===
+  // TP (Tujuan Pembelajaran) 1-4 untuk LM1
+  lm1_tp1   Float?   // Nilai TP1 Lingkup Materi 1
+  lm1_tp2   Float?   // Nilai TP2 Lingkup Materi 1
+  lm1_tp3   Float?   // Nilai TP3 Lingkup Materi 1
+  lm1_tp4   Float?   // Nilai TP4 Lingkup Materi 1
+  lm1_sum   Float?   // Nilai Sumatif LM1 (rata-rata atau nilai ujian)
+  
+  // === LINGKUP MATERI 2 ===
+  lm2_tp1   Float?   // Nilai TP1 Lingkup Materi 2
+  lm2_tp2   Float?   // Nilai TP2 Lingkup Materi 2
+  lm2_tp3   Float?   // Nilai TP3 Lingkup Materi 2
+  lm2_tp4   Float?   // Nilai TP4 Lingkup Materi 2
+  lm2_sum   Float?   // Nilai Sumatif LM2
+  
+  // === LINGKUP MATERI 3 ===
+  lm3_tp1   Float?   // Nilai TP1 Lingkup Materi 3
+  lm3_tp2   Float?   // Nilai TP2 Lingkup Materi 3
+  lm3_tp3   Float?   // Nilai TP3 Lingkup Materi 3
+  lm3_tp4   Float?   // Nilai TP4 Lingkup Materi 3
+  lm3_sum   Float?   // Nilai Sumatif LM3
+  
+  // === LINGKUP MATERI 4 ===
+  lm4_tp1   Float?   // Nilai TP1 Lingkup Materi 4
+  lm4_tp2   Float?   // Nilai TP2 Lingkup Materi 4
+  lm4_tp3   Float?   // Nilai TP3 Lingkup Materi 4
+  lm4_tp4   Float?   // Nilai TP4 Lingkup Materi 4
+  lm4_sum   Float?   // Nilai Sumatif LM4
+  
+  // === LINGKUP MATERI 5 ===
+  lm5_tp1   Float?   // Nilai TP1 Lingkup Materi 5
+  lm5_tp2   Float?   // Nilai TP2 Lingkup Materi 5
+  lm5_tp3   Float?   // Nilai TP3 Lingkup Materi 5
+  lm5_tp4   Float?   // Nilai TP4 Lingkup Materi 5
+  lm5_sum   Float?   // Nilai Sumatif LM5
+  
+  // === LINGKUP MATERI 6 ===
+  lm6_sum   Float?   // Nilai Sumatif LM6 (tanpa TP individual)
+  
+  // === NILAI AKHIR ===
+  semester_final Float?  // Sumatif Akhir Semester (SAS)
+  final_score    Float?  // Nilai Rapor (NR) - Nilai final yang muncul di rapor
+  
+  createdAt DateTime @default(now())   // Timestamp pembuatan
+  updatedAt DateTime @updatedAt        // Timestamp update terakhir
+}
